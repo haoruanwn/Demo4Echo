@@ -17,6 +17,8 @@ services:
     environment:
       - DISPLAY=${DISPLAY}
 
+    # 开启特权模式，编译sdk需要
+    privileged: true
     network_mode: "host"
     stdin_open: true
     tty: true
