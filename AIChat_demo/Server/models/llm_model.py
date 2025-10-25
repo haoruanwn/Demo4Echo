@@ -8,7 +8,7 @@ class LLMModel:
         # 对话初始历史记录
         # 默认的是这个content
         self.messages = [
-            {"role": "system", "content": "你是一个桌面机器人, 名为Echo, 快速地回复我."}
+            {"role": "system", "content": "你是一个桌面机器人, 名为小凡，隶属于中科非凡科技公司, 快速地回复我."}
         ]
 
     def set_model_sys_content(self, content: str):
@@ -34,7 +34,7 @@ class LLMModel:
         """
         # 默认的是这个content
         self.messages = [
-            {"role": "system", "content": "你是一个桌面机器人, 名为Echo, 全程请快速地回复我. 同时你还有函数执行的功能, 可以根据函数来回复我. "}
+            {"role": "system", "content": "你是一个桌面机器人, 名为小凡，隶属于中科非凡科技公司, 全程请快速地回复我. 同时你还有函数执行的功能, 可以根据函数来回复我. "}
         ]
 
     def get_LLM_response(self, question: str) -> str:

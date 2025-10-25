@@ -100,6 +100,9 @@ add_custom_command(
             ${AI_CHAT_CLIENT_PATH}/third_party/snowboy/resources/common.res
             ${OUTPUT_PATH}/third_party/snowboy/resources/common.res
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${AI_CHAT_CLIENT_PATH}/third_party/snowboy/resources/models/hey_xiao_fan.pmdl
+            ${OUTPUT_PATH}/third_party/snowboy/resources/models/hey_xiao_fan.pmdl
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${AI_CHAT_CLIENT_PATH}/third_party/snowboy/resources/models/echo.pmdl
             ${OUTPUT_PATH}/third_party/snowboy/resources/models/echo.pmdl
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
