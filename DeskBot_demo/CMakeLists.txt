@@ -24,6 +24,7 @@ project(DeskBot)
 set(CMAKE_C_STANDARD 99)#C99 # lvgl officially support C99 and above
 set(CMAKE_CXX_STANDARD 17)#C17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE) # Enable compile command to ease indexing with e.g. clangd
 
 set(OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 

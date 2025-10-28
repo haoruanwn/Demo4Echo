@@ -2,7 +2,7 @@
 
 ///////////////////// VARIABLES ////////////////////
 
-#define _APP_CONTAINER_MAX_PAGES 2
+#define _APP_CONTAINER_MAX_PAGES 3
 
 ui_desktop_data_t ui_desktop_data = {
     .witdh = 320,
@@ -735,6 +735,31 @@ void ui_HomePage_init(void)
     lv_obj_set_style_text_font(ui_CalculatorIcon, &ui_font_iconfont48, LV_PART_MAIN | LV_STATE_DEFAULT);
     // event
     lv_obj_add_event_cb(ui_CalculatorBtn, ui_event_AppsBtn, LV_EVENT_CLICKED, "CalculatorPage");
+
+    // Wi-Fi app
+    lv_obj_t * ui_WiFiBtn = lv_button_create(ui_AppIconContainer);
+    lv_obj_set_width(ui_WiFiBtn, 70);
+    lv_obj_set_height(ui_WiFiBtn, 70);
+    lv_obj_set_x(ui_WiFiBtn, 655);
+    lv_obj_set_y(ui_WiFiBtn, -45);
+    lv_obj_set_align(ui_WiFiBtn, LV_ALIGN_LEFT_MID);
+    lv_obj_add_flag(ui_WiFiBtn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);     /// Flags
+    lv_obj_remove_flag(ui_WiFiBtn, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
+    lv_obj_set_style_radius(ui_WiFiBtn, 15, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_WiFiBtn, lv_color_hex(0x007BFF), LV_PART_MAIN | LV_STATE_DEFAULT); // 使用蓝色作为 Wi-Fi 主题色
+    lv_obj_set_style_bg_opa(ui_WiFiBtn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t * ui_WiFiIcon = lv_label_create(ui_WiFiBtn);
+    lv_obj_set_width(ui_WiFiIcon, LV_SIZE_CONTENT);   /// 1
+    lv_obj_set_height(ui_WiFiIcon, LV_SIZE_CONTENT);    /// 1
+    lv_obj_set_align(ui_WiFiIcon, LV_ALIGN_CENTER);
+    lv_label_set_text(ui_WiFiIcon, ""); // 假设 "" 是你图标字体中的 Wi-Fi 符号
+    lv_obj_set_style_text_color(ui_WiFiIcon, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_opa(ui_WiFiIcon, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_WiFiIcon, &ui_font_iconfont48, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // event
+    lv_obj_add_event_cb(ui_WiFiBtn, ui_event_AppsBtn, LV_EVENT_CLICKED, "WIFIPage");
+    
 
     // timer
     ui_home_timer = lv_timer_create(ui_home_timer_cb, 5000, ui_TimeLabel);

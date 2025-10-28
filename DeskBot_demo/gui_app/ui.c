@@ -10,6 +10,7 @@
 #include "./pages/ui_GameMemoryPage/ui_GameMemoryPage.h"
 #include "./pages/ui_DrawPage/ui_DrawPage.h"
 #include "./pages/ui_CalculatorPage/ui_CalculatorPage.h"
+#include "./pages/ui_WIFIPage/ui_WIFIPage.h"
 ///////////////////// VARIABLES ////////////////////
 
 lv_lib_pm_t page_manager;
@@ -24,7 +25,7 @@ ui_system_para_t ui_system_para;
 
 ///////////////////// all apps ////////////////////
 
-#define _APP_NUMS 11 // number of apps (including HomePage)
+#define _APP_NUMS 12 // number of apps (including HomePage)
 
 ui_app_data_t ui_apps[_APP_NUMS] = 
 {
@@ -105,8 +106,13 @@ ui_app_data_t ui_apps[_APP_NUMS] =
         .init = ui_CalculatorPage_init,
         .deinit = ui_CalculatorPage_deinit,
         .page_obj = NULL
+    },
+    {
+        .name = "WIFIPage",
+        .init = ui_WIFIPage_init,
+        .deinit = ui_WIFIPage_deinit,
+        .page_obj = NULL
     }
-
 };
 
 ///////////////////// Function ////////////////////
