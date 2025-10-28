@@ -28,9 +28,32 @@ lv_obj_t * ui_Keyboard;          // 虚拟键盘
 #endif
 // --- [END MODIFICATION] ---
 
+static lv_obj_t * ui_ConnectingModal = NULL; // 用于 "正在连接..." 的模态框
+
 
 ///////////////////// 静态函数 (FUNCTIONS) ////////////////////
 static void wifi_ssid_click_cb(lv_event_t * e);
+
+/**
+ * @brief [NEW] Wi-Fi 主列表页的返回按钮处理器
+ * 这是退出 Wi-Fi "App" 的唯一出口, 在这里清理服务
+ */
+static void wifi_main_back_event_handler(lv_event_t * e)
+{
+    LV_LOG_USER("Exiting Wi-Fi, de-initializing service.");
+
+    // [NEW] 真正的 de-init 逻辑放在这里
+    #if LV_USE_SIMULATOR == 0
+        if(wifi_poll_timer) {
+            lv_timer_del(wifi_poll_timer);
+            wifi_poll_timer = NULL;
+        }
+        wifi_service_deinit();
+    #endif
+    
+    // 调用原始的 "back" 逻辑
+    lv_lib_pm_OpenPrePage(&page_manager);
+}
 
 /**
  * @brief 通用的返回按钮事件处理器
@@ -77,6 +100,16 @@ static void on_scan_finished(wifi_scan_result_t *results, int count)
  */
 static void on_status_changed(wifi_connection_status_t status, const char *details)
 {
+    // [MODIFICATION] 检查是否需要关闭模态框
+    if (status == WIFI_STATUS_CONNECTED || status == WIFI_STATUS_CONNECTION_FAILED || status == WIFI_STATUS_DISCONNECTED) 
+    {
+        if (ui_ConnectingModal) 
+        {
+            lv_obj_del(ui_ConnectingModal);
+            ui_ConnectingModal = NULL;
+        }
+    }
+
     switch(status) {
         case WIFI_STATUS_SCANNING:
             LV_LOG_USER("Real status: Scanning...");
@@ -205,6 +238,48 @@ static void scan_button_event_handler(lv_event_t * e)
 }
 
 /**
+ * @brief [NEW] 显示 "正在连接..." 模态框
+ */
+static void ui_show_connecting_modal(void)
+{
+    // 如果已存在, 先删除 (虽然不应该发生)
+    if(ui_ConnectingModal) {
+        lv_obj_del(ui_ConnectingModal);
+        ui_ConnectingModal = NULL;
+    }
+    
+    // 创建一个半透明的模态蒙版
+    // 我们使用 lv_layer_top() 确保它在键盘之上
+    lv_obj_t * mask = lv_obj_create(lv_layer_top());
+    lv_obj_remove_flag(mask, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(mask, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_bg_color(mask, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(mask, LV_OPA_50, 0); // 50% 透明
+    lv_obj_add_flag(mask, LV_OBJ_FLAG_HIDDEN); // 添加模态标志
+    lv_obj_clear_flag(mask, LV_OBJ_FLAG_CLICKABLE); // 允许点击 (虽然被模态阻止)
+
+    // 创建一个容器
+    ui_ConnectingModal = lv_obj_create(mask);
+    lv_obj_set_size(ui_ConnectingModal, 200, 100);
+    lv_obj_align(ui_ConnectingModal, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(ui_ConnectingModal, lv_color_white(), 0);
+    lv_obj_set_style_radius(ui_ConnectingModal, 8, 0);
+
+    // 添加 "菊花" (Spinner)
+    lv_obj_t * spinner = lv_spinner_create(ui_ConnectingModal);
+    lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -10);
+
+    // 添加 "Connecting..." 标签
+    lv_obj_t * label = lv_label_create(ui_ConnectingModal);
+    lv_label_set_text(label, "Connecting...");
+    lv_obj_set_style_text_color(label, lv_color_black(), 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 30);
+    
+    // 将蒙版（而非容器）赋给全局变量，以便删除
+    ui_ConnectingModal = mask;
+}
+
+/**
  * @brief 列表中某个 SSID 被点击时的事件
  */
 static void wifi_ssid_click_cb(lv_event_t * e)
@@ -258,6 +333,9 @@ static void keyboard_event_cb(lv_event_t * e)
             // --- 模拟结束 ---
         #else
             LV_LOG_USER("Using REAL wifi_service connect.");
+
+            // 弹出 "Connecting..." 模态框以阻止重复点击
+            ui_show_connecting_modal();
             // --- 调用真实 C API ---
             wifi_service_connect(selected_ssid, password);
             // 保持在当前页面
@@ -279,6 +357,12 @@ static void ui_WIFIPasswordMenu_init(void)
 {
     lv_obj_t * ui_WIFIPasswordMenu = lv_obj_create(NULL);
     lv_obj_remove_flag(ui_WIFIPasswordMenu, LV_OBJ_FLAG_SCROLLABLE);
+
+#if LV_USE_SIMULATOR == 0
+    // (重用来自列表页的全局 timer 变量和回调)
+    if(wifi_poll_timer) lv_timer_del(wifi_poll_timer); // 安全起见
+    wifi_poll_timer = lv_timer_create(wifi_poll_timer_cb, 100, NULL);
+#endif
 
     // 1. 返回按钮 (借鉴 ui_SettingPage.c)
     lv_obj_t * ui_BtnBack = lv_button_create(ui_WIFIPasswordMenu);
@@ -331,6 +415,12 @@ static void ui_WIFIPasswordMenu_deinit(void)
 {
     // deinit
     // 页面管理器会自动处理 ui_WIFIPasswordMenu 对象的删除
+#if LV_USE_SIMULATOR == 0
+    if(wifi_poll_timer) {
+        lv_timer_del(wifi_poll_timer);
+        wifi_poll_timer = NULL;
+    }
+#endif
 }
 
 ///////////////// 子屏幕页面管理器 /////////////////
@@ -387,7 +477,7 @@ void ui_WIFIPage_init(void)
     lv_obj_set_style_bg_opa(ui_BtnBack, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_opa(ui_BtnBack, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_BtnBack, 64, LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_add_event_cb(ui_BtnBack, back_event_handler, LV_EVENT_CLICKED, ui_WIFIRootMenu);
+    lv_obj_add_event_cb(ui_BtnBack, wifi_main_back_event_handler, LV_EVENT_CLICKED, ui_WIFIRootMenu);
 
     lv_obj_t * ui_LabelBack = lv_label_create(ui_BtnBack);
     lv_label_set_text(ui_LabelBack, "");
@@ -470,7 +560,7 @@ void ui_WIFIPage_deinit()
             wifi_poll_timer = NULL;
         }
         // 关闭 C 后端服务
-        wifi_service_deinit();
+        // wifi_service_deinit();
     #endif
     // --- [END MODIFICATION] ---
     
