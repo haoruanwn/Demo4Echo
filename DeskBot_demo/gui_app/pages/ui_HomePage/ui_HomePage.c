@@ -753,7 +753,8 @@ void ui_HomePage_init(void)
     lv_obj_set_width(ui_WiFiIcon, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_WiFiIcon, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_align(ui_WiFiIcon, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_WiFiIcon, ""); // 假设 "" 是你图标字体中的 Wi-Fi 符号
+    // lv_label_set_text(ui_WiFiIcon, ""); 
+    lv_label_set_text(ui_WiFiIcon, LV_SYMBOL_WIFI); // 使用 LVGL 内置的 Wi-Fi 符号
     lv_obj_set_style_text_color(ui_WiFiIcon, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_WiFiIcon, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_WiFiIcon, &ui_font_iconfont48, LV_PART_MAIN | LV_STATE_DEFAULT);
