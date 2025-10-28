@@ -3,7 +3,7 @@
 #include "wifi_types.hpp"
 #include <cstring>
 
-// [核心] 根据 LV_USE_SIMULATOR 包含不同的 C++ 实现
+// 根据 LV_USE_SIMULATOR 包含不同的实现
 #if LV_USE_SIMULATOR == 1
     #include "wifi_manager_sim.hpp"
 #else
@@ -42,7 +42,6 @@ static void CppResultToC(const WifiScanResult& cpp_res, app_wifi_scan_result_t* 
 // --- C API 实现 ---
 
 int app_wifi_init(const char *iface_name) {
-    // [核心] 在这里切换实现
 #if LV_USE_SIMULATOR == 1
     WifiService::getInstance().setManager(std::make_unique<SimWifiManager>());
 #else

@@ -36,7 +36,8 @@ private:
     int sendCmd(const char *cmd, char *reply_buf, size_t reply_buf_len);
     void fetchScanResults();
 
-    std::string iface_path_;
+    std::string iface_name_; // 存储接口名称, e.g., "wlan0"
+    std::string iface_path_; // e.g., "/var/run/wpa_supplicant/wlan0"
     struct wpa_ctrl *ctrl_cmd_ = nullptr;     // 用于主线程 (命令)
     struct wpa_ctrl *ctrl_monitor_ = nullptr; // 用于监控线程 (事件)
 
