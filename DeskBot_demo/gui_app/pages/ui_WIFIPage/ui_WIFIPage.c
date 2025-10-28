@@ -1,10 +1,7 @@
-#include <string.h> // for strcmp
+#include <string.h>
 #include "ui_WIFIPage.h"
-#if LV_USE_SIMULATOR == 0
-    #include "app_WIFIPage.h" 
-#endif
-// --- [END MODIFICATION] ---
-
+// [修改] 包含单一的、新的 C-API 头文件
+#include "app_WIFIPage/app_wifi_service.h"
 
 ///////////////////// 变量 (VARIABLES) ////////////////////
 
@@ -19,14 +16,8 @@ static char selected_ssid[64];   // 用于在页面间传递SSID
 lv_obj_t * ui_TextAreaPassword;  // 密码输入框
 lv_obj_t * ui_Keyboard;          // 虚拟键盘
 
-// --- [MODIFICATION] ---
-// 条件变量: 模拟器用一个, 真实硬件用另一个
-#if LV_USE_SIMULATOR == 1
-    static lv_timer_t * scan_sim_timer; // 用于模拟扫描的计时器
-#else
-    static lv_timer_t * wifi_poll_timer; // 用于轮询 C 后端的计时器
-#endif
-// --- [END MODIFICATION] ---
+// [修改] 只有一个轮询计时器
+static lv_timer_t * wifi_poll_timer; 
 
 static lv_obj_t * ui_ConnectingModal = NULL; // 用于 "正在连接..." 的模态框
 
@@ -34,22 +25,133 @@ static lv_obj_t * ui_ConnectingModal = NULL; // 用于 "正在连接..." 的模�
 ///////////////////// 静态函数 (FUNCTIONS) ////////////////////
 static void wifi_ssid_click_cb(lv_event_t * e);
 
+// [新增] 轮询辅助函数: 处理状态更新
+static void ui_update_wifi_status(void)
+{
+    app_wifi_connection_status_t status;
+    char details[64];
+
+    // 1. 检查 C-API 是否有新状态
+    if (app_wifi_get_new_status(&status, details, sizeof(details)))
+    {
+        LV_LOG_USER("New status detected: %d", status);
+
+        // 2. [CRASH FIX] 处理模态框 (模态框是全局的, 可以在任何页面关闭)
+        if (status == APP_WIFI_STATUS_CONNECTED || 
+            status == APP_WIFI_STATUS_CONNECTION_FAILED || 
+            status == APP_WIFI_STATUS_DISCONNECTED) 
+        {
+            if (ui_ConnectingModal) 
+            {
+                lv_obj_del(ui_ConnectingModal);
+                ui_ConnectingModal = NULL;
+            }
+        }
+
+        // 3. 根据状态更新 UI
+        switch(status) {
+            case APP_WIFI_STATUS_SCANNING:
+                LV_LOG_USER("UI update: Scanning...");
+                // (UI 已在 scan_button_event_handler 中设置)
+                break;
+                
+            case APP_WIFI_STATUS_SCAN_FINISHED:
+                LV_LOG_USER("UI update: Scan Finished.");
+                // [CRASH FIX] 只有在列表页活动时才操作列表页的控件
+                if (lv_scr_act() == ui_WIFIRootMenu) {
+                    lv_obj_add_flag(ui_SpinnerScan, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_clear_state(ui_BtnScan, LV_STATE_DISABLED);
+                    lv_label_set_text(lv_obj_get_child(ui_BtnScan, 0), "Scan");
+                }
+                break;
+                
+            case APP_WIFI_STATUS_CONNECTING:
+                LV_LOG_USER("UI update: Connecting...");
+                break;
+                
+            case APP_WIFI_STATUS_CONNECTED:
+                LV_LOG_USER("UI update: Connected.");
+                ui_msgbox_info("Success", "Wi-Fi Connected!");
+                // [CRASH FIX] 只有在密码页(的父对象)活动时才尝试返回
+                if (ui_TextAreaPassword && lv_scr_act() == lv_obj_get_parent(ui_TextAreaPassword)) {
+                    lv_lib_pm_OpenPrePage(&page_manager); // 成功, 关闭密码页
+                }
+                break;
+                
+            case APP_WIFI_STATUS_CONNECTION_FAILED:
+                LV_LOG_USER("UI update: Connection Failed.");
+                ui_msgbox_info("Error", details[0] ? details : "Connection Failed");
+                // 失败, 停留在密码页
+                break;
+                
+            case APP_WIFI_STATUS_DISCONNECTED:
+                LV_LOG_USER("UI update: Disconnected.");
+                break;
+                
+            default:
+                break;
+        }
+    }
+}
+
+// [新增] 轮询辅助函数: 处理扫描列表更新
+static void ui_update_scan_list(void)
+{
+    // [CRASH FIX] 只有在 Wi-Fi 列表页是活动屏幕时才执行
+    if (lv_scr_act() != ui_WIFIRootMenu) {
+        return; 
+    }
+
+    // 假设最多 32 个 AP
+    app_wifi_scan_result_t results[32];
+    int count = 32;
+
+    // 1. 检查 C-API 是否有新列表
+    if (app_wifi_get_new_scan_results(results, &count))
+    {
+        LV_LOG_USER("New scan list detected. Populating %d items.", count);
+        
+        // 2. 清理旧列表
+        lv_obj_clean(ui_WIFIList);
+
+        // 3. 填充真实扫描结果
+        for (int i = 0; i < count; i++)
+        {
+            lv_obj_t * btn = lv_list_add_btn(ui_WIFIList, LV_SYMBOL_WIFI, results[i].ssid);
+            lv_obj_add_event_cb(btn, wifi_ssid_click_cb, LV_EVENT_CLICKED, NULL);
+        }
+    }
+}
+
+
 /**
- * @brief [NEW] Wi-Fi 主列表页的返回按钮处理器
+ * @brief [修改] LVGL 定时器回调, 用于轮询C后端
+ */
+static void wifi_poll_timer_cb(lv_timer_t * timer) {
+    // 1. 告诉 C++ 后端处理内部事件
+    app_wifi_poll();
+    
+    // 2. 从 C++ 后端拉取状态并更新 UI
+    ui_update_wifi_status();
+    
+    // 3. 从 C++ 后端拉取列表并更新 UI
+    ui_update_scan_list();
+}
+
+/**
+ * @brief [修改] Wi-Fi 主列表页的返回按钮处理器
  * 这是退出 Wi-Fi "App" 的唯一出口, 在这里清理服务
  */
 static void wifi_main_back_event_handler(lv_event_t * e)
 {
     LV_LOG_USER("Exiting Wi-Fi, de-initializing service.");
 
-    // [NEW] 真正的 de-init 逻辑放在这里
-    #if LV_USE_SIMULATOR == 0
-        if(wifi_poll_timer) {
-            lv_timer_del(wifi_poll_timer);
-            wifi_poll_timer = NULL;
-        }
-        wifi_service_deinit();
-    #endif
+    // [修改] 停止计时器并反初始化C++后端
+    if(wifi_poll_timer) {
+        lv_timer_del(wifi_poll_timer);
+        wifi_poll_timer = NULL;
+    }
+    app_wifi_deinit();
     
     // 调用原始的 "back" 逻辑
     lv_lib_pm_OpenPrePage(&page_manager);
@@ -57,7 +159,6 @@ static void wifi_main_back_event_handler(lv_event_t * e)
 
 /**
  * @brief 通用的返回按钮事件处理器
- * (从 ui_SettingPage.c 借鉴)
  */
 static void back_event_handler(lv_event_t * e)
 {
@@ -69,131 +170,8 @@ static void back_event_handler(lv_event_t * e)
 }
 
 
-// --- [NEW] 真实硬件的回调函数 ---
-#if LV_USE_SIMULATOR == 0
-
-/**
- * @brief [REAL] 扫描完成的回调 (来自 wifi_service)
- * 由 wifi_service_poll() 在 LVGL 线程中调用
- */
-static void on_scan_finished(wifi_scan_result_t *results, int count)
-{
-    LV_LOG_USER("Wi-Fi scan finished (Real).");
-    // 1. 清理旧列表
-    lv_obj_clean(ui_WIFIList);
-
-    // 2. 填充真实扫描结果
-    for (int i = 0; i < count; i++)
-    {
-        // (可选) 你可以在此根据 results[i].signal_level 
-        // 选择不同的 Wi-Fi 图标 (例如 强/中/弱)
-        lv_obj_t * btn = lv_list_add_btn(ui_WIFIList, LV_SYMBOL_WIFI, results[i].ssid);
-        
-        // 传递 NULL, 在回调中我们使用 lv_list_get_btn_text 获取
-        lv_obj_add_event_cb(btn, wifi_ssid_click_cb, LV_EVENT_CLICKED, NULL);
-    }
-}
-
-/**
- * @brief [REAL] Wi-Fi 状态改变的回调 (来自 wifi_service)
- * 由 wifi_service_poll() 在 LVGL 线程中调用
- */
-static void on_status_changed(wifi_connection_status_t status, const char *details)
-{
-    // [MODIFICATION] 检查是否需要关闭模态框
-    if (status == WIFI_STATUS_CONNECTED || status == WIFI_STATUS_CONNECTION_FAILED || status == WIFI_STATUS_DISCONNECTED) 
-    {
-        if (ui_ConnectingModal) 
-        {
-            lv_obj_del(ui_ConnectingModal);
-            ui_ConnectingModal = NULL;
-        }
-    }
-
-    switch(status) {
-        case WIFI_STATUS_SCANNING:
-            LV_LOG_USER("Real status: Scanning...");
-            // UI 已经在 "Scanning..." 状态
-            break;
-            
-        case WIFI_STATUS_SCAN_FINISHED:
-            LV_LOG_USER("Real status: Scan Finished.");
-            // 隐藏“菊花”并重新启用扫描按钮
-            lv_obj_add_flag(ui_SpinnerScan, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_state(ui_BtnScan, LV_STATE_DISABLED);
-            lv_label_set_text(lv_obj_get_child(ui_BtnScan, 0), "Scan");
-            break;
-            
-        case WIFI_STATUS_CONNECTING:
-            LV_LOG_USER("Real status: Connecting...");
-            // (可选) 可以在此弹出一个 "Connecting..." 的非阻塞提示
-            break;
-            
-        case WIFI_STATUS_CONNECTED:
-            LV_LOG_USER("Real status: Connected.");
-            ui_msgbox_info("Success", "Wi-Fi Connected!");
-            lv_lib_pm_OpenPrePage(&page_manager); // 成功, 关闭密码页
-            break;
-            
-        case WIFI_STATUS_CONNECTION_FAILED:
-            LV_LOG_USER("Real status: Connection Failed.");
-            ui_msgbox_info("Error", details ? details : "Connection Failed");
-            // 失败, 停留在密码页
-            break;
-            
-        case WIFI_STATUS_DISCONNECTED:
-            LV_LOG_USER("Real status: Disconnected.");
-            // (可选: 显示断连提示)
-            break;
-            
-        default:
-            break;
-    }
-}
-
-/**
- * @brief [REAL] LVGL 定时器回调, 用于轮询C后端
- */
-static void wifi_poll_timer_cb(lv_timer_t * timer) {
-    wifi_service_poll();
-}
-
-#endif // LV_USE_SIMULATOR == 0
-// --- [END NEW] ---
-
-
-#if LV_USE_SIMULATOR == 1
-/**
- * @brief (模拟) 扫描完成的回调
- */
-static void scan_finished_cb(lv_timer_t * timer)
-{
-    LV_LOG_USER("Wi-Fi scan finished (simulation).");
-
-    // 1. 隐藏“菊花”并重新启用扫描按钮
-    lv_obj_add_flag(ui_SpinnerScan, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_state(ui_BtnScan, LV_STATE_DISABLED);
-    lv_label_set_text(lv_obj_get_child(ui_BtnScan, 0), "Scan");
-
-    // 2. 清理旧列表
-    lv_obj_clean(ui_WIFIList);
-
-    // 3. 添加模拟的扫描结果
-    // --- 模拟数据 ---
-    const char* fake_ssids[] = {"MyHome_WIFI_5G", "Office_Network", "Guest_WIFI", "CoffeeShop_Free", NULL};
-    // --- 模拟数据结束 ---
-    
-    for (int i = 0; fake_ssids[i] != NULL; i++)
-    {
-        lv_obj_t * btn = lv_list_add_btn(ui_WIFIList, LV_SYMBOL_WIFI, fake_ssids[i]);
-        // [MODIFICATION] 传递 NULL, 保持与真实 API 一致
-        lv_obj_add_event_cb(btn, wifi_ssid_click_cb, LV_EVENT_CLICKED, NULL);
-    }
-
-    lv_timer_del(scan_sim_timer); // 删除一次性计时器
-    scan_sim_timer = NULL;
-}
-#endif // LV_USE_SIMULATOR == 1
+// --- [移除] 移除所有 on_scan_finished 和 on_status_changed 回调 ---
+// --- [移除] 移除所有 LV_USE_SIMULATOR == 0/1 的条件编译块 ---
 
 
 /**
@@ -221,82 +199,61 @@ static void scan_button_event_handler(lv_event_t * e)
     // 3. 显示“菊花”
     lv_obj_clear_flag(ui_SpinnerScan, LV_OBJ_FLAG_HIDDEN);
 
-    // --- [MODIFICATION] ---
-    // 4. 根据模式调用不同逻辑
-    #if LV_USE_SIMULATOR == 1
-        // 模拟一个2秒的扫描延迟
-        LV_LOG_USER("Using SIMULATOR scan.");
-        if(scan_sim_timer) lv_timer_del(scan_sim_timer);
-        scan_sim_timer = lv_timer_create(scan_finished_cb, 2000, NULL);
-    #else
-        // 调用真实的 C API
-        LV_LOG_USER("Using REAL wifi_service scan.");
-        wifi_service_request_scan();
-        // 结果将通过 on_status_changed(WIFI_STATUS_SCAN_FINISHED) 异步返回
-    #endif
-    // --- [END MODIFICATION] ---
+    // 4. [修改] 调用 C-API
+    LV_LOG_USER("Calling app_wifi_request_scan().");
+    app_wifi_request_scan();
+    // 结果将通过 wifi_poll_timer_cb 异步返回
 }
 
 /**
- * @brief [NEW] 显示 "正在连接..." 模态框
+ * @brief [不变] 显示 "正在连接..." 模态框
  */
 static void ui_show_connecting_modal(void)
 {
-    // 如果已存在, 先删除 (虽然不应该发生)
     if(ui_ConnectingModal) {
         lv_obj_del(ui_ConnectingModal);
         ui_ConnectingModal = NULL;
     }
     
-    // 创建一个半透明的模态蒙版
-    // 我们使用 lv_layer_top() 确保它在键盘之上
     lv_obj_t * mask = lv_obj_create(lv_layer_top());
     lv_obj_remove_flag(mask, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(mask, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_bg_color(mask, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(mask, LV_OPA_50, 0); // 50% 透明
-    lv_obj_add_flag(mask, LV_OBJ_FLAG_HIDDEN); // 添加模态标志
-    lv_obj_clear_flag(mask, LV_OBJ_FLAG_CLICKABLE); // 允许点击 (虽然被模态阻止)
+    lv_obj_set_style_bg_opa(mask, LV_OPA_50, 0);
+    lv_obj_add_flag(mask, LV_OBJ_FLAG_HIDDEN); 
+    lv_obj_clear_flag(mask, LV_OBJ_FLAG_CLICKABLE);
 
-    // 创建一个容器
     ui_ConnectingModal = lv_obj_create(mask);
     lv_obj_set_size(ui_ConnectingModal, 200, 100);
     lv_obj_align(ui_ConnectingModal, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(ui_ConnectingModal, lv_color_white(), 0);
     lv_obj_set_style_radius(ui_ConnectingModal, 8, 0);
 
-    // 添加 "菊花" (Spinner)
     lv_obj_t * spinner = lv_spinner_create(ui_ConnectingModal);
     lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -10);
 
-    // 添加 "Connecting..." 标签
     lv_obj_t * label = lv_label_create(ui_ConnectingModal);
     lv_label_set_text(label, "Connecting...");
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_CENTER, 0, 30);
     
-    // 将蒙版（而非容器）赋给全局变量，以便删除
     ui_ConnectingModal = mask;
 }
 
 /**
- * @brief 列表中某个 SSID 被点击时的事件
+ * @brief [不变] 列表中某个 SSID 被点击时的事件
  */
 static void wifi_ssid_click_cb(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
-
-    // --- [MODIFICATION] ---
-    // 从按钮 target 获取文本, 而不是 user_data, 这样更健壮
     lv_obj_t * btn = lv_event_get_target(e);
     const char * ssid = lv_list_get_btn_text(ui_WIFIList, btn);
-    // --- [END MODIFICATION] ---
 
     if(code == LV_EVENT_CLICKED) {
         if (!ssid) return;
         LV_LOG_USER("Selected SSID: %s", ssid);
 
-        // 1. 保存被选中的 SSID，以便密码页面可以显示它
+        // 1. 保存被选中的 SSID
         strncpy(selected_ssid, ssid, sizeof(selected_ssid) - 1);
         selected_ssid[sizeof(selected_ssid) - 1] = '\0';
 
@@ -306,7 +263,7 @@ static void wifi_ssid_click_cb(lv_event_t * e)
 }
 
 /**
- * @brief 虚拟键盘事件 (用于密码页面)
+ * @brief [修改] 虚拟键盘事件 (用于密码页面)
  */
 static void keyboard_event_cb(lv_event_t * e)
 {
@@ -315,35 +272,15 @@ static void keyboard_event_cb(lv_event_t * e)
 
     if (code == LV_EVENT_READY) { // "OK" 按钮被按下
         const char * password = lv_textarea_get_text(ui_TextAreaPassword);
-        LV_LOG_USER("Attempting to connect to %s with password: %s", selected_ssid, password);
+        LV_LOG_USER("Attempting to connect to %s", selected_ssid);
 
-        // --- [MODIFICATION] ---
-        #if LV_USE_SIMULATOR == 1
-            LV_LOG_USER("Using SIMULATOR connect logic.");
-            // --- 模拟连接逻辑 ---
-            if (strcmp(password, "12345678") == 0) {
-                // 模拟成功
-                ui_msgbox_info("Success", "Wi-Fi Connected!"); // (借鉴ui_msgbox_info)
-                // 成功后，关闭键盘和密码页，返回到 Wi-Fi 列表
-                lv_lib_pm_OpenPrePage(&page_manager);
-            } else {
-                // 模拟失败
-                ui_msgbox_info("Error", "Connection Failed!\nWrong Password."); //
-            }
-            // --- 模拟结束 ---
-        #else
-            LV_LOG_USER("Using REAL wifi_service connect.");
-
-            // 弹出 "Connecting..." 模态框以阻止重复点击
-            ui_show_connecting_modal();
-            // --- 调用真实 C API ---
-            wifi_service_connect(selected_ssid, password);
-            // 保持在当前页面
-            // 结果将通过 on_status_changed 异步返回
-            // (成功则关闭页面, 失败则显示 msgbox)
-        #endif
-        // --- [END MODIFICATION] ---
-
+        // 弹出 "Connecting..." 模态框以阻止重复点击
+        ui_show_connecting_modal();
+        
+        // [修改] --- 调用 C API ---
+        app_wifi_connect(selected_ssid, password);
+        // 结果将通过 wifi_poll_timer_cb 异步返回
+        
     } else if (code == LV_EVENT_CANCEL) { // "Close" 按钮被按下
         // 关闭键盘和密码页，返回到 Wi-Fi 列表
         lv_lib_pm_OpenPrePage(&page_manager);
@@ -352,19 +289,19 @@ static void keyboard_event_cb(lv_event_t * e)
 
 ///////////////////// 子屏幕 (sub screens) ////////////////////
 
-// ... (ui_WIFIPasswordMenu_init 及其内容保持不变) ...
 static void ui_WIFIPasswordMenu_init(void)
 {
     lv_obj_t * ui_WIFIPasswordMenu = lv_obj_create(NULL);
     lv_obj_remove_flag(ui_WIFIPasswordMenu, LV_OBJ_FLAG_SCROLLABLE);
 
-#if LV_USE_SIMULATOR == 0
-    // (重用来自列表页的全局 timer 变量和回调)
-    if(wifi_poll_timer) lv_timer_del(wifi_poll_timer); // 安全起见
-    wifi_poll_timer = lv_timer_create(wifi_poll_timer_cb, 100, NULL);
-#endif
+    // [修改] 确保轮询计时器在子页面也存在
+    // (计时器由 ui_WIFIPage_init 创建, 在 wifi_main_back_event_handler 销毁)
+    if(!wifi_poll_timer) {
+        LV_LOG_WARN("wifi_poll_timer not found in sub-page! Creating one.");
+        wifi_poll_timer = lv_timer_create(wifi_poll_timer_cb, 100, NULL);
+    }
 
-    // 1. 返回按钮 (借鉴 ui_SettingPage.c)
+    // 1. 返回按钮
     lv_obj_t * ui_BtnBack = lv_button_create(ui_WIFIPasswordMenu);
     lv_obj_set_width(ui_BtnBack, 50);
     lv_obj_set_height(ui_BtnBack, 45);
@@ -400,9 +337,9 @@ static void ui_WIFIPasswordMenu_init(void)
 
     // 4. 虚拟键盘
     ui_Keyboard = lv_keyboard_create(ui_WIFIPasswordMenu);
-    lv_obj_set_size(ui_Keyboard, 320, 150); // 调整键盘大小以适应屏幕
+    lv_obj_set_size(ui_Keyboard, 320, 150);
     lv_obj_set_align(ui_Keyboard, LV_ALIGN_BOTTOM_MID);
-    lv_keyboard_set_textarea(ui_Keyboard, ui_TextAreaPassword); // 关联键盘和输入框
+    lv_keyboard_set_textarea(ui_Keyboard, ui_TextAreaPassword); 
     lv_obj_add_event_cb(ui_Keyboard, keyboard_event_cb, LV_EVENT_ALL, NULL);
 
     // 加载页面
@@ -410,20 +347,16 @@ static void ui_WIFIPasswordMenu_init(void)
 }
 
 
-// ... (ui_WIFIPasswordMenu_deinit, _WIFI_SUB_MENU_NUMS, ui_wifi_sub_menu_apps, _ui_wifi_sub_menus_creat 保持不变) ...
 static void ui_WIFIPasswordMenu_deinit(void)
 {
-    // deinit
+    // [修改] 不再在这里删除计时器
+    // 计时器是全局的, 由主返回按钮 (wifi_main_back_event_handler) 管理
+    
     // 页面管理器会自动处理 ui_WIFIPasswordMenu 对象的删除
-#if LV_USE_SIMULATOR == 0
-    if(wifi_poll_timer) {
-        lv_timer_del(wifi_poll_timer);
-        wifi_poll_timer = NULL;
-    }
-#endif
+    ui_TextAreaPassword = NULL; // 清除静态指针
 }
 
-///////////////// 子屏幕页面管理器 /////////////////
+///////////////// 子屏幕页面管理器 (不变) /////////////////
 
 #define _WIFI_SUB_MENU_NUMS 1
 
@@ -467,8 +400,7 @@ void ui_WIFIPage_init(void)
     ui_WIFIRootMenu = lv_obj_create(NULL);
     lv_obj_remove_flag(ui_WIFIRootMenu, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ... (BtnBack, LabelBack, BtnScan, LabelScan, SpinnerScan, WIFIList 的创建保持不变) ...
-    // 1. 返回按钮 (借鉴 ui_SettingPage.c)
+    // 1. 返回按钮 (绑定到新的清理 handler)
     lv_obj_t * ui_BtnBack = lv_button_create(ui_WIFIRootMenu);
     lv_obj_set_width(ui_BtnBack, 50);
     lv_obj_set_height(ui_BtnBack, 45);
@@ -511,30 +443,26 @@ void ui_WIFIPage_init(void)
     lv_obj_set_y(ui_WIFIList, -5);
 
 
-    // --- [MODIFICATION] ---
-    // 5. 初始时触发一次扫描 (根据模式)
-    #if LV_USE_SIMULATOR == 1
-        LV_LOG_USER("Using SIMULATOR init scan.");
-        scan_button_event_handler(NULL); // 模拟一次点击
-    #else
-        LV_LOG_USER("Using REAL wifi_service init.");
-        // 1. 初始化服务
-        // [NEXUS] 确认 "wlan0" 是你的接口
-        if (wifi_service_init("wlan0") != 0) { 
-            LV_LOG_ERROR("Failed to init Wi-Fi service");
-            // (可以显示一个错误标签)
-        }
-        
-        // 2. 注册回调
-        wifi_service_register_callbacks(on_scan_finished, on_status_changed);
-        
-        // 3. 创建轮询定时器
-        wifi_poll_timer = lv_timer_create(wifi_poll_timer_cb, 100, NULL); // 100ms
-        
-        // 4. 初始时触发一次扫描
-        // (调用 handler 来显示菊花、清空列表等)
-        scan_button_event_handler(NULL); 
-    #endif
+    // --- [修改] ---
+    // 5. 初始时触发一次扫描
+    LV_LOG_USER("Initializing Wi-Fi C-API.");
+    
+    // 1. 初始化服务
+    // [NEXUS] 确认 "wlan0" 是你的接口
+    if (app_wifi_init("wlan0") != 0) { 
+        LV_LOG_ERROR("Failed to init Wi-Fi service");
+    }
+    
+    // 2. [移除] 移除回调注册
+    
+    // 3. 创建轮询定时器 (确保唯一)
+    if(wifi_poll_timer) {
+        lv_timer_del(wifi_poll_timer);
+    }
+    wifi_poll_timer = lv_timer_create(wifi_poll_timer_cb, 100, NULL); // 100ms
+    
+    // 4. 初始时触发一次扫描
+    scan_button_event_handler(NULL); 
     // --- [END MODIFICATION] ---
 
     // 加载页面
@@ -546,23 +474,29 @@ void ui_WIFIPage_init(void)
 
 void ui_WIFIPage_deinit()
 {
-    // --- [MODIFICATION] ---
-    #if LV_USE_SIMULATOR == 1
-        // 确保模拟计时器被删除
-        if(scan_sim_timer) {
-            lv_timer_del(scan_sim_timer);
-            scan_sim_timer = NULL;
-        }
-    #else
-        // 确保轮询计时器被删除
-        if(wifi_poll_timer) {
-            lv_timer_del(wifi_poll_timer);
-            wifi_poll_timer = NULL;
-        }
-        // 关闭 C 后端服务
-        // wifi_service_deinit();
-    #endif
-    // --- [END MODIFICATION] ---
+    // [修改]
+    // 真正的清理逻辑在 wifi_main_back_event_handler 中, 因为那是此 "App" 的
+    // 唯一出口。如果你的页面管理器 (PM) 在切换页面时调用此 deinit,
+    // 我们不希望在这里停止 C++ 后端。
     
-    // 页面管理器会自动删除 ui_WIFIRootMenu
+    // 但是, 我们必须清理 LVGL 计时器, 否则它会尝试调用一个
+    // 存在于已销毁页面(ui_WIFIRootMenu)上下文中的回调。
+    
+    // 安全起见: 假设此函数在页面被销毁时调用, 我们必须删除计时器。
+    // `wifi_main_back_event_handler` 也会尝试删除它,
+    // (lv_timer_del 如果 timer == NULL 会安全返回)
+
+    if(wifi_poll_timer) {
+        LV_LOG_USER("ui_WIFIPage_deinit: Deleting poll timer.");
+        lv_timer_del(wifi_poll_timer);
+        wifi_poll_timer = NULL;
+    }
+    
+    // C++ 后端 (app_wifi_deinit) 由 wifi_main_back_event_handler 显式调用
+    
+    // 清理静态指针
+    ui_WIFIRootMenu = NULL;
+    ui_WIFIList = NULL;
+    ui_BtnScan = NULL;
+    ui_SpinnerScan = NULL;
 }
