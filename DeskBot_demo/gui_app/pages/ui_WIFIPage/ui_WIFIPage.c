@@ -82,33 +82,39 @@ static void scan_finished_cb(lv_timer_t * timer)
  */
 static void scan_button_event_handler(lv_event_t * e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    if(code == LV_EVENT_CLICKED) {
-        LV_LOG_USER("Wi-Fi scan triggered.");
-
-        // 1. 清空当前列表
-        lv_obj_clean(ui_WIFIList);
-
-        // 2. 禁用按钮，修改文本为 "Scanning..."
-        lv_obj_add_state(ui_BtnScan, LV_STATE_DISABLED);
-        lv_label_set_text(lv_obj_get_child(ui_BtnScan, 0), "Scanning...");
-
-        // 3. 显示“菊花”
-        lv_obj_clear_flag(ui_SpinnerScan, LV_OBJ_FLAG_HIDDEN);
-
-        /* * [ Nexus 提示 ]
-         * 在这里，你应该调用你的C/C++ Wi-Fi 库的 *异步* 扫描函数
-         * (例如我们之前讨论的 wpa_ctrl_request "SCAN")
-         * * 当你的 wpa_supplicant 事件循环收到 "CTRL-EVENT-SCAN-RESULTS" 时,
-         * 你再去调用真实的 getScanResults() 并填充列表 (即 scan_finished_cb 的内容)。
-         *
-         * 为了演示，我用一个2秒的定时器模拟这个异步过程。
-         */
-        
-        // 模拟一个2秒的扫描延迟
-        if(scan_sim_timer) lv_timer_del(scan_sim_timer);
-        scan_sim_timer = lv_timer_create(scan_finished_cb, 2000, NULL);
+    // 1. 检查 'e' (事件) 是否存在
+    //    如果 e 不是 NULL (一个真的点击事件), 我们才检查 event code
+    if(e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        // 如果不是点击事件 (比如长按、拖拽等), 就直接返回
+        if(code != LV_EVENT_CLICKED) {
+            return;
+        }
     }
+
+    // 2. 无论是 'e' 为 NULL (来自init的手动触发)
+    //    还是 'e' 是一个合法的 CLICKED 事件
+    //    都会执行到这里的扫描逻辑
+
+    LV_LOG_USER("Wi-Fi scan triggered.");
+
+    // 1. 清空当前列表
+    lv_obj_clean(ui_WIFIList);
+
+    // 2. 禁用按钮，修改文本为 "Scanning..."
+    lv_obj_add_state(ui_BtnScan, LV_STATE_DISABLED);
+    lv_label_set_text(lv_obj_get_child(ui_BtnScan, 0), "Scanning...");
+
+    // 3. 显示“菊花”
+    lv_obj_clear_flag(ui_SpinnerScan, LV_OBJ_FLAG_HIDDEN);
+
+    /* * [ Nexus 提示 ]
+     * (这部分是函数原有的逻辑，保持不变)
+     */
+    
+    // 模拟一个2秒的扫描延迟
+    if(scan_sim_timer) lv_timer_del(scan_sim_timer);
+    scan_sim_timer = lv_timer_create(scan_finished_cb, 2000, NULL);
 }
 
 /**

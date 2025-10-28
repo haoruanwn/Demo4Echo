@@ -12,7 +12,7 @@ extern "C" {
 #include "../stack/lv_lib_stack.h"
 
 #define LV_PM_MAX_PAGE_HISTORY 5
-#define LV_PM_MAX_PAGES 20
+#define LV_PM_MAX_PAGES 30
 
 // 定义页面结构
 // init() should include load function, 
