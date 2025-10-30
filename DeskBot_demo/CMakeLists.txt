@@ -173,6 +173,12 @@ if(TARGET_ARM)
 
 endif()
 
+# 引用WI-Fi_demo中的库
+set(WIFI_DEMO_PATH "${PROJECT_SOURCE_DIR}/../Wi-Fi_demo" CACHE PATH "Path to WI-FI_demo")
+add_subdirectory(${WIFI_DEMO_PATH} ${CMAKE_BINARY_DIR}/WIFI_build)
+target_link_libraries(main WifiManager)
+
+
 # 使用 set_target_properties 设置 main 的输出目录
 set_target_properties(main PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_PATH}"

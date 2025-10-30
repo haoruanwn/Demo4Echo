@@ -1,6 +1,6 @@
 #include <string.h>
 #include "ui_WIFIPage.h"
-#include "app_wifi_service.h" // 包含新的 C-API 头文件
+#include "./app_WIFIPage/app_wifi_service.h" // 包含新的 C-API 头文件
 
 ///////////////////// 变量 (VARIABLES) ////////////////////
 

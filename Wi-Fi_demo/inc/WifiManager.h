@@ -2,6 +2,7 @@
 #include <future>
 #include <optional>
 #include <thread>
+#include <utility>
 #include "WifiTypes.h"
 
 
@@ -18,15 +19,19 @@
 template<typename WifiStrategy>
 class WifiManager {
 public:
-    // 获取单例实例
-    static WifiManager &GetInstance() {
-        static WifiManager instance;
+    // 构造：将构造参数转发给策略的构造函数。对于需要显式路径的策略（例如
+    // RealWifiStrategy），必须在构造时传入所需参数。
+    template <typename... Args>
+    explicit WifiManager(Args&&... args) : m_strategy(std::forward<Args>(args)...) {}
+
+    ~WifiManager() = default;
+
+    // 获取单例实例（必须在首次调用时提供与策略构造匹配的参数；后续调用无需重复）
+    template <typename... Args>
+    static WifiManager &GetInstance(Args&&... args) {
+        static WifiManager instance(std::forward<Args>(args)...);
         return instance;
     }
-
-    // 可公开构造/析构，允许外部以 make_unique 创建实例
-    WifiManager() = default;
-    ~WifiManager() = default;
 
     // 默认析构由类内部实现（用于停止 manager 线程）
 
