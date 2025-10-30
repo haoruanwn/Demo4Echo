@@ -28,7 +28,7 @@ set_target_properties(wpa_supplicant::wpa_client PROPERTIES
 
 add_library(${PROJECT_NAME} STATIC
     src/WifiManager.cc
-    src/WifiManager_C_Wrapper.cc
+    src/LVGL_interface.cc
 )
 
 target_include_directories(${PROJECT_NAME}
