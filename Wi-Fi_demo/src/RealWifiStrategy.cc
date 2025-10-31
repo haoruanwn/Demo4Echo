@@ -3,14 +3,20 @@
 #include <cstring>
 #include <poll.h>
 #include <sstream>
+#include <sys/stat.h>
+#include <ifaddrs.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <thread>
 #include <vector>
 #include <wpa_ctrl.h>
 
 // 构造函数必须提供路径与接口名称
 RealWifiStrategy::RealWifiStrategy(const std::string &ctrlPath, const std::string &ifaceName,
-                                   const std::string &wpaConfApp, const std::string &wpaConfDev) :
-    m_ctrl_path(ctrlPath), m_iface_name(ifaceName), m_wpa_conf_app(wpaConfApp), m_wpa_conf_dev(wpaConfDev) {
+                                   const std::string &wpaConfApp, const std::string &wpaConfDev,
+                                   bool auto_dhcp, const std::string &dhcpClientCmd) :
+    m_ctrl_path(ctrlPath), m_iface_name(ifaceName), m_wpa_conf_app(wpaConfApp), m_wpa_conf_dev(wpaConfDev),
+    m_auto_dhcp(auto_dhcp), m_dhcp_cmd(dhcpClientCmd) {
     // 启动工作线程
     m_workerThread = std::thread([this]() { this->WorkerLoop(); });
 }
@@ -57,24 +63,37 @@ std::optional<WifiScanResult> RealWifiStrategy::PollScanResult() { return m_scan
 
 std::optional<ConnectionStatus> RealWifiStrategy::PollConnectionStatus() { return m_connectionStatusQueue.try_pop(); }
 
+// 工作线程主循环，接受任务并处理 WPA 事件
 void RealWifiStrategy::WorkerLoop() {
-    // Try to open control interfaces. We try the common socket path first, then
-    // fall back to interface name. If opening fails we still process queued tasks
-    // (they will fail early with an error).
-    // Common control path used by many systems:
-    const char *ctrl_path = "/var/run/wpa_supplicant/wlan0";
-    m_ctrl_if = wpa_ctrl_open(ctrl_path);
+    // 通过构造函数注入的路径和接口名称打开控制接口
+    std::string ctrl_socket;
+    if (!m_ctrl_path.empty()) {
+        ctrl_socket = m_ctrl_path;
+        if (!ctrl_socket.empty() && ctrl_socket.back() != '/')
+            ctrl_socket.push_back('/');
+        // 把它转换为大概这么个形式：/var/run/wpa_supplicant/，再在后面加上接口名
+        ctrl_socket += m_iface_name;
+        // e.g. /var/run/wpa_supplicant/wlan0
+    }
+
+    // 打开控制接口，并传给m_ctrl_if
+    m_ctrl_if = nullptr;
+    if (!ctrl_socket.empty()) {
+        m_ctrl_if = wpa_ctrl_open(ctrl_socket.c_str());
+    }
     if (!m_ctrl_if) {
-        // fallback to interface name (some wpa_ctrl implementations accept this)
-        m_ctrl_if = wpa_ctrl_open("wlan0");
+        // fallback to using iface name directly (some wpa_ctrl implementations accept this)
+        m_ctrl_if = wpa_ctrl_open(m_iface_name.c_str());
     }
 
     // Try to open a monitor interface for events
     m_mon_if = nullptr;
     if (m_ctrl_if) {
-        m_mon_if = wpa_ctrl_open(ctrl_path);
+        if (!ctrl_socket.empty()) {
+            m_mon_if = wpa_ctrl_open(ctrl_socket.c_str());
+        }
         if (!m_mon_if) {
-            m_mon_if = wpa_ctrl_open("wlan0");
+            m_mon_if = wpa_ctrl_open(m_iface_name.c_str());
         }
         if (m_mon_if) {
             // Attach to receive events where supported. Ignore return value.
@@ -82,9 +101,9 @@ void RealWifiStrategy::WorkerLoop() {
         }
     }
 
-    // Process tasks from the queue. Thread blocks inside pop(); if queue is
-    // closed pop() returns nullopt and we exit.
+    // 启动从任务队列处理任务的循环，如果队列关闭则退出
     while (!m_stopWorker.load()) {
+        // 从任务队列中弹出任务
         auto opt = m_taskQueue.pop();
         if (!opt)
             break; // queue closed
@@ -113,6 +132,7 @@ void RealWifiStrategy::WorkerLoop() {
         }
     }
 
+    // while循环结束了，清理控制接口
     // Clean up control interfaces
     if (m_mon_if) {
         wpa_ctrl_detach(m_mon_if);
@@ -340,6 +360,52 @@ void RealWifiStrategy::DoConnectRequest(const std::string &ssid, const std::stri
             s.isConnected = true;
             s.ssid = ssid;
             m_connectionStatusQueue.push(std::move(s));
+
+            // After association is complete, ensure the interface has an IPv4
+            // address. If not and auto DHCP is enabled, attempt to start the
+            // configured DHCP client (e.g. udhcpc). Use getifaddrs to check
+            // for existing AF_INET address.
+            if (m_auto_dhcp) {
+                bool has_ipv4 = false;
+                struct ifaddrs *ifaddr = nullptr;
+                if (getifaddrs(&ifaddr) == 0) {
+                    for (struct ifaddrs *ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
+                        if (!ifa->ifa_addr) continue;
+                        if (ifa->ifa_addr->sa_family == AF_INET && ifa->ifa_name && m_iface_name == ifa->ifa_name) {
+                            has_ipv4 = true;
+                            break;
+                        }
+                    }
+                    freeifaddrs(ifaddr);
+                }
+
+                if (!has_ipv4) {
+                    // check if dhcp client exists in PATH
+                    std::string check_cmd = std::string("command -v ") + m_dhcp_cmd + " >/dev/null 2>&1";
+                    int rc = system(check_cmd.c_str());
+                    if (rc == 0) {
+                        // avoid starting duplicate clients for the same iface
+                        std::string pgrep_cmd = std::string("pgrep -f \"") + m_dhcp_cmd + " .* -i " + m_iface_name + " >/dev/null 2>&1";
+                        int already = system(pgrep_cmd.c_str());
+                        if (already != 0) {
+                            std::string dhcp_cmd = m_dhcp_cmd + " -i " + m_iface_name + " >/dev/null 2>&1 &";
+                            system(dhcp_cmd.c_str());
+                            ConnectionStatus d;
+                            d.isConnected = true;
+                            d.ssid = ssid;
+                            d.errorMessage = std::string("launched DHCP client: ") + m_dhcp_cmd;
+                            m_connectionStatusQueue.push(std::move(d));
+                        }
+                    } else {
+                        ConnectionStatus info;
+                        info.isConnected = true;
+                        info.ssid = ssid;
+                        info.errorMessage = std::string("DHCP client not found: ") + m_dhcp_cmd;
+                        m_connectionStatusQueue.push(std::move(info));
+                    }
+                }
+            }
+
             return;
         }
     }
@@ -351,33 +417,97 @@ void RealWifiStrategy::DoConnectRequest(const std::string &ssid, const std::stri
 }
 
 void RealWifiStrategy::DoSwitchNetwork(bool toAppNetwork) {
-    // A simple implementation might enable/disable a saved network id.
-    // Here we provide a best-effort: if toAppNetwork==true try to select
-    // network with ssid "APP_AP" (this is application specific). Otherwise,
-    // do nothing and report status via connection queue.
+    // 根据bool变量来选择是切换到app还是dev网络
+    // true表示切换到app网络，false表示切换到dev网络
+
+    // 链接状态初始化为未连接
     ConnectionStatus s;
     s.isConnected = false;
-    if (!m_ctrl_if) {
-        s.errorMessage = "no ctrl interface";
-        m_connectionStatusQueue.push(std::move(s));
-        return;
+
+    // 通过构造函数注入的参数来指定控制socket路径，例如/var/run/wpa_supplicant/wlan0
+    std::string ctrl_dir = m_ctrl_path; 
+    std::string ctrl_socket;
+    if (!ctrl_dir.empty()) {
+        ctrl_socket = ctrl_dir;
+        if (!ctrl_socket.empty() && ctrl_socket.back() != '/')
+            ctrl_socket.push_back('/');
+        ctrl_socket += m_iface_name;
     }
 
-    // Build command to stop any existing wpa_supplicant for the interface
+    // 选择配置文件
     const std::string &conf = toAppNetwork ? m_wpa_conf_app : m_wpa_conf_dev;
-    // Notify caller that switching is starting
     s.errorMessage = std::string("switching to ") + (toAppNetwork ? "app" : "dev");
     m_connectionStatusQueue.push(s);
 
-    // Stop wpa_supplicant for this interface. Command may vary by system.
+    // Try to reuse an existing wpa_supplicant control socket if possible. This
+    // avoids killing a system-managed wpa_supplicant or stepping on another
+    // process that already controls the interface.
+    // 尝试复用现有的控制socket
+    struct wpa_ctrl *try_ctrl = nullptr;
+    if (!ctrl_socket.empty())
+        try_ctrl = wpa_ctrl_open(ctrl_socket.c_str());
+    if (!try_ctrl)
+        try_ctrl = wpa_ctrl_open(m_iface_name.c_str());
+    if (try_ctrl) {
+        // Reuse existing control interface: replace our handles and attach monitor
+        if (m_mon_if) {
+            wpa_ctrl_detach(m_mon_if);
+            wpa_ctrl_close(m_mon_if);
+            m_mon_if = nullptr;
+        }
+        if (m_ctrl_if) {
+            wpa_ctrl_close(m_ctrl_if);
+            m_ctrl_if = nullptr;
+        }
+
+        m_ctrl_if = try_ctrl;
+        if (!ctrl_socket.empty())
+            m_mon_if = wpa_ctrl_open(ctrl_socket.c_str());
+        if (!m_mon_if)
+            m_mon_if = wpa_ctrl_open(m_iface_name.c_str());
+        if (m_mon_if)
+            wpa_ctrl_attach(m_mon_if);
+
+        ConnectionStatus reused;
+        reused.isConnected = false;
+        reused.errorMessage = "reused existing wpa_supplicant control socket";
+        m_connectionStatusQueue.push(std::move(reused));
+        return;
+    }
+
+    // If a ctrl path was provided and the socket file exists but couldn't be
+    // opened, it may be stale (leftover from unclean termination). Remove it
+    // to allow a fresh wpa_supplicant to create a new socket. If no ctrl path
+    // was provided, skip filesystem operations and rely on iface-name fallback.
+    if (!ctrl_socket.empty()) {
+        struct stat st;
+        if (stat(ctrl_socket.c_str(), &st) == 0) {
+            if (S_ISSOCK(st.st_mode)) {
+                unlink(ctrl_socket.c_str());
+                ConnectionStatus removed;
+                removed.isConnected = false;
+                removed.errorMessage = "removed stale control socket";
+                m_connectionStatusQueue.push(std::move(removed));
+            }
+        }
+    }
+
+    // 清除所有存在的wpa_supplicant进程
     std::string kill_cmd = "pkill -f \"wpa_supplicant.*-i " + m_iface_name + "\" 2>/dev/null || true";
     system(kill_cmd.c_str());
-    // small pause to let process exit
+
+    // 延时等待进程退出
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    // Start wpa_supplicant with desired conf. Use -B to background when supported.
-    std::string start_cmd =
-            "wpa_supplicant -B -i " + m_iface_name + " -c " + conf + " -C /var/run/wpa_supplicant 2>/dev/null";
+    // 利用选定的配置文件启动wpa_supplicant
+    std::string start_cmd;
+    if (!ctrl_dir.empty()) {
+        start_cmd = "wpa_supplicant -B -i " + m_iface_name + " -c " + conf + " -C " + ctrl_dir + " 2>/dev/null";
+    } else {
+        start_cmd = "wpa_supplicant -B -i " + m_iface_name + " -c " + conf + " 2>/dev/null";
+    }
+
+    // 执行启动命令
     int rc = system(start_cmd.c_str());
     if (rc != 0) {
         ConnectionStatus err;
@@ -387,8 +517,29 @@ void RealWifiStrategy::DoSwitchNetwork(bool toAppNetwork) {
         return;
     }
 
-    // Allow wpa_supplicant to create control socket
-    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    // Wait for wpa_supplicant to create control socket file: <ctrl_dir>/<iface>
+    // ctrl_socket was prepared earlier
+    // 检查socket文件是否存在（根据上一个步骤启动的wpa_supplicant进程创建）
+    auto socket_exists = [&](const std::string &path) -> bool {
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0)
+            return false;
+        return S_ISSOCK(st.st_mode);
+    };
+
+    // If we have a ctrl socket path we can wait for it to appear. Otherwise
+    // skip waiting and rely on wpa_ctrl_open(m_iface_name) fallback.
+    bool found = false;
+    if (!ctrl_socket.empty()) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (socket_exists(ctrl_socket)) {
+                found = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
 
     // Re-open control interfaces: close existing then open new ones
     if (m_mon_if) {
@@ -401,15 +552,21 @@ void RealWifiStrategy::DoSwitchNetwork(bool toAppNetwork) {
         m_ctrl_if = nullptr;
     }
 
-    // Try to open control socket using configured ctrl path or interface
-    m_ctrl_if = wpa_ctrl_open(m_ctrl_path.c_str());
+    // Try to open control socket using constructed socket path first, then fallback to iface name
+    if (found) {
+        m_ctrl_if = wpa_ctrl_open(ctrl_socket.c_str());
+    }
     if (!m_ctrl_if) {
+        // Fallback: try opening by iface name which may work depending on libwpa_ctrl
         m_ctrl_if = wpa_ctrl_open(m_iface_name.c_str());
     }
     if (m_ctrl_if) {
-        m_mon_if = wpa_ctrl_open(m_ctrl_path.c_str());
-        if (!m_mon_if)
+        if (found) {
+            m_mon_if = wpa_ctrl_open(ctrl_socket.c_str());
+        }
+        if (!m_mon_if) {
             m_mon_if = wpa_ctrl_open(m_iface_name.c_str());
+        }
         if (m_mon_if)
             wpa_ctrl_attach(m_mon_if);
     }
