@@ -22,7 +22,6 @@ extern "C" {
 #include "../../../../Wi-Fi_demo/inc/RealWifiStrategy.h"
 #include "../../../../Wi-Fi_demo/inc/WifiTypes.h"
 #include "../../conf/dev_conf.h"  // for LV_USE_SIMULATOR
-#include "../../ui_wifi_config.h"
 
 using namespace std;
 
@@ -43,12 +42,11 @@ lv_obj_t * ui_WIFIList = nullptr;
 lv_obj_t * ui_BtnScan = nullptr;
 lv_obj_t * ui_SpinnerScan = nullptr;
 
-// Wi‑Fi manager 的配置由 ui.c 提供（C 可见的 const char*），在此转换为
-// C++ 的 std::string 以便传入 WifiManager::GetInstance。
-static std::string ctrlPath = (g_wifi_ctrlPath_c ? std::string(g_wifi_ctrlPath_c) : std::string());
-static std::string iface = (g_wifi_iface_c ? std::string(g_wifi_iface_c) : std::string());
-static std::string wpa_conf_app = (g_wpa_conf_app_c ? std::string(g_wpa_conf_app_c) : std::string());
-static std::string wpa_conf_dev = (g_wpa_conf_dev_c ? std::string(g_wpa_conf_dev_c) : std::string());
+// 在这里设置配置文件、socket路径等参数
+std::string ctrlPath = "/var/run/wpa_supplicant";
+std::string iface = "wlan0";
+std::string wpa_conf_app = "/etc/wpa_supplicant_app.conf";
+std::string wpa_conf_dev = "/etc/wpa_supplicant_dev.conf";
 
 // Helper: check whether a path exists and is a socket
 static bool is_socket(const std::string &path) {
@@ -67,7 +65,7 @@ static std::string detect_ctrl_dir_for_iface(const std::string &iface) {
     return std::string();
 }
 
-
+// 存储选中的 SSID  
 static char selected_ssid[64];
 lv_obj_t * ui_TextAreaPassword = nullptr;
 lv_obj_t * ui_Keyboard = nullptr;
@@ -94,7 +92,6 @@ static void ui_show_connecting_modal(void)
     lv_obj_set_size(mask, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_bg_color(mask, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(mask, LV_OPA_50, 0);
-    lv_obj_add_flag(mask, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(mask, LV_OBJ_FLAG_CLICKABLE);
 
     ui_ConnectingModal = lv_obj_create(mask);
@@ -152,8 +149,8 @@ static void ui_update_wifi_status(void)
 
     const ConnectionStatus &s = *opt;
 
-    // connection finished (either success or failure) should dismiss modal
-    if (s.isConnected || (!s.isConnected && !s.errorMessage.empty())) {
+    // connection finished (either success or any message) should dismiss modal
+    if (s.isConnected || (!s.isConnected && (!s.errorMessage.empty() || !s.infoMessage.empty()))) {
         if (ui_ConnectingModal) {
             lv_obj_del(ui_ConnectingModal);
             ui_ConnectingModal = nullptr;
@@ -166,6 +163,8 @@ static void ui_update_wifi_status(void)
         wifi_main_back_event_handler(nullptr);
     } else if (!s.errorMessage.empty()) {
         ui_msgbox_info("Error", s.errorMessage.c_str());
+    } else if (!s.infoMessage.empty()) {
+        ui_msgbox_info("Info", s.infoMessage.c_str());
     }
 }
 
@@ -265,6 +264,26 @@ static void keyboard_event_cb(lv_event_t * e)
     }
 }
 
+// Textarea key event callback: treat Enter key as submit so virtual keyboard
+// Enter and hardware keyboard Enter both trigger connect immediately.
+static void textarea_key_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_KEY) {
+        int key = lv_event_get_key(e);
+        if (key == LV_KEY_ENTER) {
+            const char * password = lv_textarea_get_text(ui_TextAreaPassword);
+            LV_LOG_USER("Attempting to connect to %s (C++ backend via Enter)", selected_ssid);
+            ui_show_connecting_modal();
+            if (s_wifiManager) {
+                s_wifiManager->RequestConnect(std::string(selected_ssid), std::string(password ? password : ""));
+            } else {
+                LV_LOG_ERROR("wifi manager not initialized, can't RequestConnect");
+            }
+        }
+    }
+}
+
 // Subscreen: password menu init/deinit (ported from C)
 // Instead of using the page manager for password input (which will deinit
 // the Wi-Fi root page and cause WifiManager lifecycle issues), implement a
@@ -314,6 +333,8 @@ static void show_password_modal(void)
     lv_textarea_set_placeholder_text(ui_TextAreaPassword, "Password...");
     lv_textarea_set_one_line(ui_TextAreaPassword, true);
     lv_textarea_set_password_mode(ui_TextAreaPassword, true);
+    // Handle Enter from hardware or virtual keyboard by listening to LV_EVENT_KEY
+    lv_obj_add_event_cb(ui_TextAreaPassword, [](lv_event_t * e){ textarea_key_event_cb(e); }, LV_EVENT_KEY, NULL);
 
     ui_Keyboard = lv_keyboard_create(modal);
     // Make keyboard slightly larger and anchor to bottom of modal so it does

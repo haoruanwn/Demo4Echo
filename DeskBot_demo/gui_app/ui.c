@@ -11,20 +11,11 @@
 #include "./pages/ui_DrawPage/ui_DrawPage.h"
 #include "./pages/ui_CalculatorPage/ui_CalculatorPage.h"
 #include "./pages/ui_WIFIPage/ui_WIFIPage.h"
-#include "ui_wifi_config.h"
 ///////////////////// VARIABLES ////////////////////
 
 lv_lib_pm_t page_manager;
 
 ui_system_para_t ui_system_para;
-
-/* Wi‑Fi configuration strings (defined here so C code can set them).
- * The C++ UI will convert these to std::string when needed.
- */
-const char * g_wifi_ctrlPath_c = "/var/run/wpa_supplicant";
-const char * g_wifi_iface_c = "wlan0";
-const char * g_wpa_conf_app_c = "/etc/wpa_supplicant_app.conf";
-const char * g_wpa_conf_dev_c = "/etc/wpa_supplicant_dev.conf";
 
 ///////////////////// TEST LVGL SETTINGS ////////////////////
 

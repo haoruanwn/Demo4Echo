@@ -196,14 +196,52 @@ void RealWifiStrategy::DoScanRequest() {
         r.operationSuccess = false;
         r.errorMessage = "SCAN command failed";
         m_scanResultQueue.push(std::move(r));
+    fprintf(stderr, "DoScanRequest: SCAN command failed (res=%d)\n", res);
         return;
     }
 
-    // After requesting scan, try to fetch results (some wpa_supplicant signal via events).
-    // Sleep a short while to allow scan to complete; DoGetScanResults will also be
-    // invoked if monitor signals scan results.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    DoGetScanResults();
+    // After requesting scan, poll for results a few times with backoff. Some
+    // platforms need more time after app restart for firmware/driver to be
+    // ready; retrying improves robustness instead of returning empty results.
+    const int max_attempts = 6;
+    int attempt = 0;
+    int backoff_ms = 300; // initial
+    bool gotResults = false;
+    while (attempt < max_attempts) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+        // Call DoGetScanResults which will push results if available.
+        DoGetScanResults();
+        // Probe SCAN_RESULTS directly to see if non-empty payload is available.
+        std::vector<char> probeBuf(4096);
+        size_t probeLen = probeBuf.size() - 1;
+        int rr = wpa_ctrl_request(m_ctrl_if, "SCAN_RESULTS", 12, probeBuf.data(), &probeLen, nullptr);
+        if (rr == 0 && probeLen > 0) {
+            probeBuf[probeLen] = '\0';
+            std::string pdata(probeBuf.data(), probeLen);
+            // If only header present, treat as no results yet
+            if (pdata.find('\n') != std::string::npos && pdata.find('\n') + 1 < pdata.size()) {
+                fprintf(stderr, "DoScanRequest: got scan results on attempt %d (len=%zu)\n", attempt + 1, probeLen);
+                gotResults = true;
+                // Push results by calling DoGetScanResults again to keep parsing logic
+                DoGetScanResults();
+                break;
+            }
+        } else {
+            fprintf(stderr, "DoScanRequest: probe SCAN_RESULTS rr=%d len=%zu attempt=%d\n", rr, probeLen, attempt + 1);
+        }
+
+        attempt++;
+        backoff_ms = std::min(backoff_ms * 2, 2000);
+    }
+
+    if (!gotResults) {
+        // No results found after retries — return an empty result with info
+        WifiScanResult r;
+        r.operationSuccess = false;
+        r.errorMessage = "no scan results (timeout or driver not ready)";
+        m_scanResultQueue.push(std::move(r));
+    fprintf(stderr, "DoScanRequest: no scan results after %d attempts\n", max_attempts);
+    }
 }
 
 void RealWifiStrategy::DoGetScanResults() {
@@ -223,11 +261,13 @@ void RealWifiStrategy::DoGetScanResults() {
         WifiScanResult r;
         r.operationSuccess = false;
         r.errorMessage = "SCAN_RESULTS request failed";
+    fprintf(stderr, "DoGetScanResults: wpa_ctrl_request returned %d\n", res);
         m_scanResultQueue.push(std::move(r));
         return;
     }
     buf[len] = '\0';
     std::string data(buf.data(), len);
+    fprintf(stderr, "DoGetScanResults: raw len=%zu\n", len);
 
     WifiScanResult result;
     result.operationSuccess = true;
@@ -393,14 +433,14 @@ void RealWifiStrategy::DoConnectRequest(const std::string &ssid, const std::stri
                             ConnectionStatus d;
                             d.isConnected = true;
                             d.ssid = ssid;
-                            d.errorMessage = std::string("launched DHCP client: ") + m_dhcp_cmd;
+                            d.infoMessage = std::string("launched DHCP client: ") + m_dhcp_cmd;
                             m_connectionStatusQueue.push(std::move(d));
                         }
                     } else {
                         ConnectionStatus info;
                         info.isConnected = true;
                         info.ssid = ssid;
-                        info.errorMessage = std::string("DHCP client not found: ") + m_dhcp_cmd;
+                        info.infoMessage = std::string("DHCP client not found: ") + m_dhcp_cmd;
                         m_connectionStatusQueue.push(std::move(info));
                     }
                 }
@@ -468,10 +508,10 @@ void RealWifiStrategy::DoSwitchNetwork(bool toAppNetwork) {
         if (m_mon_if)
             wpa_ctrl_attach(m_mon_if);
 
-        ConnectionStatus reused;
-        reused.isConnected = false;
-        reused.errorMessage = "reused existing wpa_supplicant control socket";
-        m_connectionStatusQueue.push(std::move(reused));
+    ConnectionStatus reused;
+    reused.isConnected = false;
+    reused.infoMessage = "reused existing wpa_supplicant control socket";
+    m_connectionStatusQueue.push(std::move(reused));
         return;
     }
 
@@ -486,7 +526,7 @@ void RealWifiStrategy::DoSwitchNetwork(bool toAppNetwork) {
                 unlink(ctrl_socket.c_str());
                 ConnectionStatus removed;
                 removed.isConnected = false;
-                removed.errorMessage = "removed stale control socket";
+                removed.infoMessage = "removed stale control socket";
                 m_connectionStatusQueue.push(std::move(removed));
             }
         }
@@ -573,6 +613,6 @@ void RealWifiStrategy::DoSwitchNetwork(bool toAppNetwork) {
 
     ConnectionStatus done;
     done.isConnected = false;
-    done.errorMessage = "switch complete; network manager restarted";
+    done.infoMessage = "switch complete; network manager restarted";
     m_connectionStatusQueue.push(std::move(done));
 }
